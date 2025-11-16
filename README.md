@@ -66,6 +66,13 @@ LangGraph/
 - Python 3.10+
 - 安装依赖：`pip install -r requirement.txt`
 
+## 启动虚拟环境
+- 在 macOS/Linux 下，进入项目根目录后执行：`source .venv/bin/activate`
+- 在 Windows PowerShell 下执行：`\.venv\Scripts\Activate.ps1`
+- 在 Windows CMD 下执行：`.venv\Scripts\activate.bat`
+- 退出虚拟环境：`deactivate`
+- 激活后再安装依赖：`pip install -r requirement.txt`
+
 ## 使用方法
 1. 克隆本仓库
 2. 安装依赖
