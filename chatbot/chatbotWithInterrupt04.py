@@ -1,20 +1,17 @@
 import os
 from typing import Annotated
 
+from langchain_core.tools import tool
 from typing_extensions import TypedDict
 
-from langgraph.graph import StateGraph, START
-from langgraph.constants import END
-from langgraph.prebuilt import ToolNode
-from langgraph.graph.message import add_messages
-from langchain.chat_models import init_chat_model
-from pathlib import Path
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode, tools_condition
+from langchain.chat_models import init_chat_model
+from langgraph.types import Command, interrupt
 
 class State(TypedDict):
-    # Messages have the type "list". The `add_messages` function
-    # in the annotation defines how this state key should be updated
-    # (in this case, it appends messages to the list, rather than overwriting them)
     messages: Annotated[list, add_messages]
 
 graph_builder = StateGraph(State)
@@ -25,6 +22,12 @@ llm = init_chat_model(
     api_key=deepseek_key,
 )
 
+@tool
+def human_assistance(query: str) -> str:
+    """Request assistance from a human."""
+    human_response = interrupt({"query": query})
+    return human_response["data"] 
+@tool
 def get_weather(location: str):
     """获取指定城市当前天气的简要描述"""
     if location.lower() in ["sf", "san francisco", "旧金山"]:
@@ -36,51 +39,43 @@ def get_weather(location: str):
     else:
         return "暂时无法获取该城市的天气，请换一个地点。"
 
-tool_node = ToolNode([get_weather])
-llm_with_tool = llm.bind_tools([get_weather])
+tools = [get_weather, human_assistance]
+llm_with_tools = llm.bind_tools(tools)  
 
 def chatbot(state: State):
-    return {"messages": [llm_with_tool.invoke(state["messages"])]}
+    message = llm_with_tools.invoke(state["messages"])
+    # Because we will be interrupting during tool execution,
+    # we disable parallel tool calling to avoid repeating any
+    # tool invocations when we resume.
+    assert len(message.tool_calls) <= 1
+    return {"messages": [message]}
 
-def continue_node(state: State):
-    messages = state["messages"]
-    last_message = messages[-1]
-    if getattr(last_message, "tool_calls", None):
-        return "tools"
-    else:
-        return END
-
-# The first argument is the unique node name
-# The second argument is the function or object that will be called whenever
-# the node is used.
 graph_builder.add_node("chatbot", chatbot)
+
+tool_node = ToolNode(tools=tools)
 graph_builder.add_node("tools", tool_node)
 
-graph_builder.add_edge(START, "chatbot")
-graph_builder.add_conditional_edges("chatbot", continue_node, ["tools", END])
+graph_builder.add_conditional_edges(
+    "chatbot",
+    tools_condition,
+)
 graph_builder.add_edge("tools", "chatbot")
+graph_builder.add_edge(START, "chatbot")
 
-graph = graph_builder.compile(checkpointer=MemorySaver())
+memory = MemorySaver()
+graph = graph_builder.compile(checkpointer=memory)
 
-THREAD_ID = os.getenv("CHATBOT_THREAD_ID", "chatbot-memory")
+user_input = "I need some expert guidance for building an AI agent. Could you request assistance for me?" 
+config = {"configurable": {"thread_id": "1"}}
 
-def stream_graph_updates(user_input: str):
-    config = {"configurable": {"thread_id": THREAD_ID}}
-    for event in graph.stream({"messages": [{"role": "user", "content": user_input }] }, config=config): 
-        for value in event.values(): 
-            print("Assistant:", value["messages"][-1].content) 
+events = graph.stream(
+    {"messages": [{"role": "user", "content": user_input}]},
+    config,
+    stream_mode="values",
+)   
 
-while True:
-    try: 
-        user_input = input("User: ")  
-        if user_input.lower() in ["quit", "exit", "q"]: 
-            print("Goodbye!")
-            break
-        stream_graph_updates(user_input)
-    except: 
-        # fallback if input() is not available
-        user_input = "What do you know about LangGraph?"
-        print("User: " + user_input)
-        stream_graph_updates(user_input)
-        break
+for event in events:
+    if "messages" in event:
+        event["messages"][-1].pretty_print()
+
 
